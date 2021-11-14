@@ -12,6 +12,12 @@ class Rect:
         self.L = L
         self.R = R
 
+    def __str__(self) -> str:
+        return "R({},{},{},{})".format(self.T, self.B, self.L, self.R)
+
+    def __repr__(self) -> str:
+        return "R({},{},{},{})".format(self.T, self.B, self.L, self.R)
+
     # check if a point is inside the rectangle
     def is_inside(self, x, y) -> bool:
         return self.T <= y <= self.B and self.L <= x <= self.R
@@ -31,14 +37,14 @@ class Rect:
     def draw(self, filename: str, examples = []) -> None:
         import matplotlib.pyplot as plt
         # set the boundaries of the plot to be 10 by 10
-        plt.xlim(0, MAX_LEN+1)
-        plt.ylim(0, MAX_LEN+1)
+        plt.xlim(0, MAX_LEN)
+        plt.ylim(0, MAX_LEN)
         # inverse the y axis
         plt.gca().invert_yaxis()
         # show the x axis labels from 1 to 10
-        plt.xticks(range(0, MAX_LEN+1))
+        plt.xticks(range(0, MAX_LEN))
         # show the y axis labels from 1 to 10
-        plt.yticks(range(0, MAX_LEN+1))
+        plt.yticks(range(0, MAX_LEN))
         # draw the rectangle with thick borders
         # draw the top line from L,T to R,T
         plt.plot([self.L, self.R], [self.T, self.T], 'k-', linewidth=2)
@@ -77,6 +83,9 @@ if __name__ == '__main__':
 
     Rect(1,3,4,9).draw('tmp/rect.png', [(1,1), (2,2), (3,3), (4,4), (4,1), (5,2), (9,3)])
 
-    examples = [((4,1),True), ((9,3),True), ((1,1),False), ((8,8),False)]
-    print(Rect(1,3,4,9).consistent(examples))
+    test_coords = []
+    for x in range(0, MAX_LEN+1):
+        for y in range(0, MAX_LEN+1):
+            test_coords.append((x,y))
+    examples = [((x,y),Rect(1,3,4,9)(x,y)) for x,y in test_coords]
     Rect(1,3,4,9).draw('tmp/rect2.png', examples)
