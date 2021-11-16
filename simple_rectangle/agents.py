@@ -77,16 +77,26 @@ class L_NN_F(nn.Module):
         super(L_NN_F, self).__init__()
         # initilize the parameters
         # mapping from a 200 dimensional vector a hidden_size dimensional hidden layer
-        hidden_size = 100
-        self.fc1 = nn.Linear(200, hidden_size)
+        hidden_size = 32
+        self.fc1 = nn.Linear(2 * MAX_LEN * MAX_LEN, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, hidden_size)
         # decode out the parameters
         self.T_dec = nn.Linear(hidden_size, MAX_LEN)
         self.B_dec = nn.Linear(hidden_size, MAX_LEN)
         self.L_dec = nn.Linear(hidden_size, MAX_LEN)
         self.R_dec = nn.Linear(hidden_size, MAX_LEN)
-        # initialize the optimizer, using SGD
-        self.optimizer = torch.optim.SGD(self.parameters(), lr=0.01)
+        # initialize the optimizer, using the Adam optimizer
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+        # self.optimizer = torch.optim.SGD(self.parameters(), lr=0.01)
+
+    # save the model parameters
+    def save(self, filename):
+        torch.save(self.state_dict(), filename)
+
+    # load the model parameters
+    def load(self, filename):
+        self.load_state_dict(torch.load(filename))
 
     # forward pass through the network
     # utterance match is simply a list of list of utterances (yeah it is ugly)
@@ -95,7 +105,7 @@ class L_NN_F(nn.Module):
         for utterances in utterances_batch:
             # convert utterances to a tensor
             # make a 2x10x10 tensor
-            utterances_tensor = torch.zeros(2,10,10)
+            utterances_tensor = torch.zeros(2,MAX_LEN,MAX_LEN)
             for (x,y),b in utterances:
                 if b:
                     utterances_tensor[0,x,y] = 1
@@ -106,13 +116,16 @@ class L_NN_F(nn.Module):
         # convert the batch to a tensor
         utterances_tensor_batch = torch.stack(utterances_tensor_batch)
         # flatten the utterances_tensor tensor
-        utterances_tensor_batch = utterances_tensor_batch.view(-1,200)
+        utterances_tensor_batch = utterances_tensor_batch.view(-1,2*MAX_LEN*MAX_LEN)
         # pass the utterances through the network
         # fc1 followed by a relu
         x = self.fc1(utterances_tensor_batch)
         x = nn.functional.relu(x)
         # fc2 followed by a relu
         x = self.fc2(x)
+        x = nn.functional.relu(x)
+        # fc3 followed by a relu
+        x = self.fc3(x)
         x = nn.functional.relu(x)
         # decode the parameters, and output the logits
         t = self.T_dec(x)
@@ -160,32 +173,13 @@ class L_NN_F(nn.Module):
         # return them
         return t,b,l,r
 
-    # at inference time
-    # takes in a list of utterances, and infer the parameters of the rectangle
-    def infer(self, utterances, num_attempts=0):
-        # get the unigram distribution of the rectangle parameters
-        t,b,l,r = self.generate_unigram([utterances])
-        # enumerate from the unigram distribution
-        for num_attempts in range(100):
-            T = np.random.choice(range(MAX_LEN), p=t)
-            B = np.random.choice(range(MAX_LEN), p=b)
-            L = np.random.choice(range(MAX_LEN), p=l)
-            R = np.random.choice(range(MAX_LEN), p=r)
-            # check if the rectangle is consistent with utterances
-            if Rect(T,B,L,R).consistent(utterances):
-                # check rectangle is legal
-                if T+1 < B and L+1 < R:
-                    return (T,B,L,R), num_attempts
-        # if we can't find a consistent rectangle, print failure, then return None
-        # print("FAILURE")
-        return None, num_attempts
-
     # enumerate from the unigram distribution
     def enumerate(self, utterances, budget):
+        # print (f"attempting to enumerate under {utterances}")
         # get the unigram distribution of the rectangle parameters
         t,b,l,r = self.generate_unigram([utterances])
         # enumerate from the unigram distribution
-        
+
         # sort and rank each unigram distribution
         t_rank = np.argsort(t)[::-1]
         b_rank = np.argsort(b)[::-1]
@@ -198,7 +192,7 @@ class L_NN_F(nn.Module):
             if any(queue_id < 0 or queue_id >= MAX_LEN for queue_id in queue_ids):
                 return None, -np.inf
             rect_params = t_rank[queue_ids[0]], b_rank[queue_ids[1]], l_rank[queue_ids[2]], r_rank[queue_ids[3]]
-            log_rect_prob = np.log(t[queue_ids[0]]) + np.log(b[queue_ids[1]]) + np.log(l[queue_ids[2]]) + np.log(r[queue_ids[3]])
+            log_rect_prob = np.log(t[rect_params[0]]) + np.log(b[rect_params[1]]) + np.log(l[rect_params[2]]) + np.log(r[rect_params[3]])
             return rect_params, log_rect_prob 
 
         # make the priority queue
@@ -224,7 +218,7 @@ class L_NN_F(nn.Module):
             q_rect_params, q_rect_prob = queue_ids_to_rect_and_logprob(q_id)
             # check if the rectangle is consistent with utterances
             
-            if Rect(*q_rect_params).consistent(utterances):
+            if rect_is_valid(*q_rect_params) and Rect(*q_rect_params).consistent(utterances):
                 ret.append(q_rect_params)
 
             # enumerate the next four rectangles
@@ -240,13 +234,12 @@ class L_NN_F(nn.Module):
                     if q_rect_params_next is not None:
                         # add the rectangle to the queue
                         pqueue.put((-q_rect_logprob_next, q_id_next))
-        # return the rectangles
-        # print ("I have seen ", len(seen))
+
         return ret
 
     # make the class into a callable form using the above function
     def __call__(self, utterances):
-        ret = self.enumerate(utterances, budget=100)
+        ret = self.enumerate(utterances, budget=8)
         return ret
 
 
@@ -305,9 +298,10 @@ class S1:
 class S_CE:
 
     # initialize the speaker with a target listener
-    def __init__(self, listener, ce_num = 100):
+    def __init__(self, listener):
         self.listener = listener
-        self.ce_num = ce_num
+
+        self.pruning_history = []
 
     # takes in a rectangle and a list of past utterances, return a new utterance
     def utter_once(self, rect_param, past_utterances):
@@ -315,18 +309,21 @@ class S_CE:
         # enumerate the listener from past utterances up to budget
         inferred_rect_params_list = self.listener(past_utterances)
 
+        # some diagnostics
+        listener_unigram = self.listener.generate_unigram([past_utterances])
+        listener_candidates = inferred_rect_params_list
+        self.pruning_history.append((str(past_utterances), listener_unigram, listener_candidates))
+
         # if the listener fails to find any consistent rectangles, speak no further 
         # the current utterance-prog pair is hard enough
         if len(inferred_rect_params_list) == 0:
             # print (f"[S_CE] failed {past_utterances}")
             return None
 
-        # if the most likely rectangle is the target, speak no further
-        if inferred_rect_params_list[0] == rect_param:
-            print (f"[S_CE] successful {rect_param} {past_utterances}")
+        # if the correct rectangle is isolated, speak no further
+        if len(inferred_rect_params_list) == 1 and inferred_rect_params_list[0] == rect_param:
+            # print (f"[S_CE] ! successfully isolated {rect_param} {past_utterances}")
             return None
-
-
 
         # otherwise, try to select a coordinate that filter out the most number of params
         # enumerate over all possible new coordinates
@@ -361,7 +358,7 @@ class S_CE:
         return best_uttr
 
     # make multiple utterances
-    def utter(self, rect, num_utterances):
+    def utter(self, rect, num_utterances, diagnose):
         # initialize the list of utterances
         utterances = []
         # make num_utterances utterances
@@ -370,13 +367,29 @@ class S_CE:
             if new_utter is None:
                 break
             # append the new utterance to the list
-            utterances.append(new_utter)
+            utterances = utterances + [new_utter]
+
+        # print out the pruning history
+        if diagnose:
+            print (f"[S_CE] pruning history: {[len(wah) for _,_,wah in self.pruning_history]}")
+            # print (f"\n\n[S_CE] with {rect}:")
+            # for uttr, unigram, candidates in self.pruning_history:
+            #     print (f"  utterance: {uttr}")
+            #     print (f"  unigram:")
+            #     tt,bb,ll,rr = unigram
+            #     print (f"    t {tt}")
+            #     print (f"    b {bb}")
+            #     print (f"    l {ll}")
+            #     print (f"    r {rr}")
+            #     print (f"  candidates (out of {len(candidates)}): {candidates[:10]}")
+
+        self.pruning_history = []
         # return the list of utterances
         return utterances
 
     # make the class into a callable form using the above function
-    def __call__(self, rect, num_utterances):
-        return self.utter(rect, num_utterances)
+    def __call__(self, rect, num_utterances, diagnose=False):
+        return self.utter(rect, num_utterances, diagnose)
 
 if __name__ == '__main__':
     # generate a rectangle

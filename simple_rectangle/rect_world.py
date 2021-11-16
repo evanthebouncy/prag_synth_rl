@@ -1,5 +1,5 @@
 # some awful global variables indicating the max size of the world
-MAX_LEN = 10
+MAX_LEN = 6
 
 # a rectangle is parameterized by Top/Bottom/Left/Right
 
@@ -73,6 +73,9 @@ class Rect:
 
         plt.savefig(filename)
         plt.close()
+
+def rect_is_valid(T,B,L,R) -> bool:
+    return T+1 < B and L+1 < R
 
 if __name__ == '__main__':
     rect = Rect(1,6,1,6)
