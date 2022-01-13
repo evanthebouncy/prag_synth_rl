@@ -45,6 +45,8 @@ class Rect:
         plt.xticks(range(0, MAX_LEN))
         # show the y axis labels from 1 to 10
         plt.yticks(range(0, MAX_LEN))
+        # make the plot a square
+        plt.gca().set_aspect('equal', adjustable='box')
         # draw the rectangle with thick borders
         # draw the top line from L,T to R,T
         plt.plot([self.L, self.R], [self.T, self.T], 'k-', linewidth=2)
@@ -75,8 +77,10 @@ class Rect:
         plt.close()
 
 def rect_is_valid(T,B,L,R) -> bool:
-    return T+1 < B and L+1 < R
-
+    non_empty = T+1 < B and L+1 < R
+    not_big = (B-T) + (R-L) <= MAX_LEN
+    return non_empty and not_big
+    
 if __name__ == '__main__':
     rect = Rect(1,6,1,6)
     print(rect.is_inside(5,5))

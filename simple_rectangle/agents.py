@@ -72,8 +72,15 @@ class L0:
 # the learning based listener
 class L_NN_F(nn.Module):
 
+    def __str__(self) -> str:
+        return "l_nn_factored"
+    def __repr__(self):
+        return "L_NN_F"
+
     # initialize the listener
-    def __init__(self):
+    def __init__(self, budget):
+        self.budget = budget
+
         super(L_NN_F, self).__init__()
         # initilize the parameters
         # mapping from a 200 dimensional vector a hidden_size dimensional hidden layer
@@ -239,9 +246,178 @@ class L_NN_F(nn.Module):
 
     # make the class into a callable form using the above function
     def __call__(self, utterances):
-        ret = self.enumerate(utterances, budget=8)
+        ret = self.enumerate(utterances, budget=self.budget)
         return ret
 
+# make the joint listener that uses a neural network
+# the learning based listener
+class L_NN_J(nn.Module):
+
+    def __str__(self) -> str:
+        return "l_nn_joint"
+    def __repr__(self):
+        return "L_NN_J"
+
+    # initialize the listener
+    def __init__(self, budget):
+        self.budget = budget
+
+        super(L_NN_J, self).__init__()
+        # initilize the parameters
+        # mapping from a 200 dimensional vector a hidden_size dimensional hidden layer
+        hidden_size = 32
+        self.fc1 = nn.Linear(2 * MAX_LEN * MAX_LEN, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, hidden_size)
+        # output a mean and logvar of the hidden layer size
+        self.fc_mu = nn.Linear(hidden_size, hidden_size)
+        self.fc_logvar = nn.Linear(hidden_size, hidden_size)
+        # decode out the parameters
+        self.fc_dec = nn.Linear(hidden_size, hidden_size)
+        self.T_dec = nn.Linear(hidden_size, MAX_LEN)
+        self.B_dec = nn.Linear(hidden_size, MAX_LEN)
+        self.L_dec = nn.Linear(hidden_size, MAX_LEN)
+        self.R_dec = nn.Linear(hidden_size, MAX_LEN)        
+
+        # initialize the optimizer, using the Adam optimizer
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+        # self.optimizer = torch.optim.SGD(self.parameters(), lr=0.01)
+
+    # save the model parameters
+    def save(self, filename):
+        torch.save(self.state_dict(), filename)
+
+    # load the model parameters
+    def load(self, filename):
+        self.load_state_dict(torch.load(filename))
+
+    # encode the inputs
+    def encode(self, utter_batch):
+        utterances_tensor_batch = []
+        for utterances in utter_batch:
+            # convert utterances to a tensor
+            # make a 2x10x10 tensor
+            utterances_tensor = torch.zeros(2,MAX_LEN,MAX_LEN)
+            for (x,y),b in utterances:
+                if b:
+                    utterances_tensor[0,x,y] = 1
+                else:
+                    utterances_tensor[1,x,y] = 1
+            # append the tensor to the batch
+            utterances_tensor_batch.append(utterances_tensor)
+        # convert the batch to a tensor
+        utterances_tensor_batch = torch.stack(utterances_tensor_batch)
+        # flatten the utterances_tensor tensor
+        utterances_tensor_batch = utterances_tensor_batch.view(-1,2*MAX_LEN*MAX_LEN)
+        # pass the utterances through the network
+        # fc1 followed by a relu
+        x = self.fc1(utterances_tensor_batch)
+        x = nn.functional.relu(x)
+        # fc2 followed by a relu
+        x = self.fc2(x)
+        x = nn.functional.relu(x)
+        # fc3 followed by a relu
+        x = self.fc3(x)
+        x = nn.functional.relu(x)
+        # return the mean and logvar
+        return self.fc_mu(x), self.fc_logvar(x)
+
+    # reparameterize the latent variables
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5*logvar)
+        eps = torch.randn_like(std)
+        return mu + eps*std
+
+    # decode the latent variables
+    def decode(self, z):
+        x = self.fc_dec(z)
+        x = nn.functional.relu(x)
+        # decode the parameters, and output the logits
+        t = self.T_dec(x)
+        b = self.B_dec(x)
+        l = self.L_dec(x)
+        r = self.R_dec(x)
+        # return the logits
+        return t, b, l, r  
+
+    # forward pass through the network
+    def forward(self, x):
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+    # Reconstruction + KL divergence losses summed over all elements and batch
+    # def loss_function(self, sample_y, y, mu, logvar):
+    def loss_function(self, pred_programs_batch, programs_batch, mu, logvar):
+
+        # forward pass through the network to get unigrams
+        t, b, l, r = pred_programs_batch
+        # convert t_target to a tensor
+        t_target = torch.tensor([prog[0] for prog in programs_batch])
+        b_target = torch.tensor([prog[1] for prog in programs_batch])
+        l_target = torch.tensor([prog[2] for prog in programs_batch])
+        r_target = torch.tensor([prog[3] for prog in programs_batch])
+        loss_fun = nn.CrossEntropyLoss()
+        # compute the loss
+        loss = loss_fun(t, t_target) + loss_fun(b, b_target) + loss_fun(l, l_target) + loss_fun(r, r_target)
+        
+        # compute the KL divergence
+        # see Appendix B from VAE paper:
+        # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
+        # https://arxiv.org/abs/1312.6114
+        # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
+        KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        # fudge with the constant a bit
+        KLD = 0.01 * KLD
+
+        # print ("loss ", loss, "KLD ", KLD)
+        return loss + KLD
+
+    def train(self, utterances_batch, programs_batch):
+        # optimize
+        self.optimizer.zero_grad()
+        # forward pass through the network
+        pred_prog_batch, mu, logvar = self.forward(utterances_batch)
+        # compute the loss
+        loss = self.loss_function(pred_prog_batch, programs_batch, mu, logvar)
+        # backprop
+        loss.backward()
+        self.optimizer.step()
+        return loss.item()
+
+    def sample(self, x):
+        (t, b, l, r), _, _ = self.forward(x)
+        # convert t, b, l, r to probabilities using softmax
+        t = nn.functional.softmax(t, dim=1)
+        b = nn.functional.softmax(b, dim=1)
+        l = nn.functional.softmax(l, dim=1)
+        r = nn.functional.softmax(r, dim=1)
+        # unsqueeze and convert them to numpy arrays
+        t = t.detach().numpy().reshape(-1)
+        b = b.detach().numpy().reshape(-1)
+        l = l.detach().numpy().reshape(-1)
+        r = r.detach().numpy().reshape(-1)
+        # return them
+        return t,b,l,r
+
+    # enumerate from the unigram distribution
+    def enumerate(self, utterances, budget):
+        dup_utters = [utterances for _ in range(budget)]
+        (t, b, l, r), _, _ = self.forward(dup_utters)
+        all_params = [torch.argmax(_, dim=1).detach().numpy() for _ in [t, b, l, r]]
+        # stack params
+        all_params = np.stack(all_params, axis=1)
+        ret = []
+        for param in all_params:
+            # check if the rectangle is consistent with utterances
+            if rect_is_valid(*param) and Rect(*param).consistent(utterances):
+                ret.append(param)
+        return ret
+
+    # make the class into a callable form using the above function
+    def __call__(self, utterances):
+        ret = self.enumerate(utterances, budget=100)
+        return ret
 
 # the recursive speaker, does not use learning
 class S1:
@@ -403,6 +579,6 @@ if __name__ == '__main__':
     # visualize the inferred rectangle and the utterances
     Rect(*inferred_rect_params).draw('tmp/inferred_rect_params.png', utters)
 
-    inferred_rect_params, num_attempts = L_NN_F()(utters)
-    print (num_attempts)
-    Rect(*inferred_rect_params).draw('tmp/inferred_rect_params_nn.png', utters)
+    l_nn_j = L_NN_J(budget=100)
+    xx = l_nn_j([utters])
+    print (xx)
