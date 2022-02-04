@@ -102,6 +102,8 @@ plt.show()
 plt.clf()
 
 import pickle
+# import the scipy statistics module
+import scipy.stats as stats
     
 # read the pickle at tmp/results.pkl
 with open('tmp/results.pkl', 'rb') as f:
@@ -114,10 +116,24 @@ to_viz = {
     'L(S(L,L0))_5000' : results['L(S(L,L0))_5000']['num_utter']
 }
 
+print ("number of trials")
+print (len(to_viz['L(S(L(S0)))_5000']))
+
+
 number_of_bins = 10
 
+# change the print of a numpy number to 3 decimal places
+np.set_printoptions(precision=3)
+
 # visualize the results as multiple vertical histograms
-labels = ['L(S0)', 'L(S(L0))', 'L(S(L(S0)))', 'L(S(L,L0))']
+label_names = ['L(S0)', 'L(S(L0))', 'L(S(L(S0)))', 'L(S(L,L0))']
+label_means =   [f"{np.mean(to_viz[key])}"[:5] for key in to_viz]
+# make sure the number in label_means is only 3 decimal places
+label_std_err = [f"{stats.sem(to_viz[key])}"[:5] for key in to_viz]
+# zip the above 3 lists together
+label_data = list(zip(label_names, label_means, label_std_err))
+# merge the triplet into a single string
+labels = [f"{x[0]} \nmean:{x[1]} \nse:{x[2]}" for x in label_data]
 data_sets = [to_viz['L(S0)_5000'], to_viz['L(S(L0))_5000'], to_viz['L(S(L(S0)))_5000'], to_viz['L(S(L,L0))_5000']]
 
 # Computed quantities to aid plotting
@@ -140,16 +156,19 @@ heights = np.diff(bin_edges)
 # Cycle through and plot each histogram
 fig, ax = plt.subplots()
 for x_loc, binned_data in zip(x_locations, binned_data_sets):
-    print (x_loc)
     lefts = x_loc - 0.5 * binned_data
     ax.barh(centers, binned_data, height=heights, left=lefts)
+    
 
 ax.set_xticks(x_locations)
 ax.set_xticklabels(labels)
 
-ax.set_ylabel("number of utterances required")
-ax.set_xlabel("types of listeners")
+ax.set_ylabel("number of utterances required", fontsize=14)
+ax.set_xlabel("types of listeners", fontsize=14)
 
+
+# add a title
+ax.set_title(f"number of utterances required for each type of listener, number of trials = {len(to_viz['L(S(L(S0)))_5000'])}", fontsize=14)
 plt.show()
 
 # perform t-test between L(S(L,L0)) and L(S0)
@@ -174,7 +193,6 @@ to_viz = {
 number_of_bins = 20
 
 # visualize the results as multiple vertical histograms
-labels = ['L(S0)', 'L(S(L0))', 'L(S(L(S0)))', 'L(S(L,L0))']
 data_sets = [to_viz['L(S0)_5000'], to_viz['L(S(L0))_5000'], to_viz['L(S(L(S0)))_5000'], to_viz['L(S(L,L0))_5000']]
 
 # Computed quantities to aid plotting
@@ -212,5 +230,6 @@ plt.show()
 for other in ['L(S0)_5000', 'L(S(L0))_5000', 'L(S(L(S0)))_5000']:
     result = ttest_ind(to_viz['L(S(L,L0))_5000'], to_viz[other], axis=0, equal_var=False)
     print (f"t-test comparing L(S(L,L0)) and {other}")
+    print (result)
     print ('pvalue : ', result.pvalue, ' < 0.0001 : ', result.pvalue < 0.0001, ' significant : ', result.pvalue < 0.0001)
 
